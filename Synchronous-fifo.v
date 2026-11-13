@@ -1,59 +1,69 @@
-module sync_fifo #(
-    parameter DATA_WIDTH = 8,
-    parameter DEPTH = 16
-)(
-    input wire clk,
-    input wire rst,
-    input wire wr_en,
-    input wire rd_en,
-    input wire [DATA_WIDTH-1:0] data_in,
-    output reg [DATA_WIDTH-1:0] data_out,
-    output wire full,
-    output wire empty
+module fifo (
+    input [15:0] data_in,
+    input clk,
+    input rst,          // Resets pointers and flags
+    input rd_en,
+    input wr_en,
+    output reg [15:0] dout,
+    output reg full,
+    output reg empty
 );
 
-    localparam ADDR_WIDTH = $clog2(DEPTH);
-    localparam COUNT_WIDTH = $clog2(DEPTH + 1);
+    // 5-bit pointers: [4] is the lap/wrap-around bit, [3:0] are the 16 memory addresses (0 to 15)
+    reg [4:0] rp, wp;
+    
+    // 16 rows deep, each row is 16 bits wide (0 to 15)
+    reg [15:0] mem [15:0]; 
 
-    reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];
-    reg [ADDR_WIDTH-1:0] wr_ptr;
-    reg [ADDR_WIDTH-1:0] rd_ptr;
-    reg [COUNT_WIDTH-1:0] count;
+    // Flag generation logic
+    always @(*) begin
+        full  = (rp[3:0] == wp[3:0]) && (rp[4] != wp[4]);
+        empty = (rp == wp);
+    end
 
-    assign full  = (count == DEPTH);
-    assign empty = (count == 0);
-
-    always @(posedge clk or posedge rst) begin
+    // Synchronous operations on clock edge
+    always @(posedge clk) begin
         if (rst) begin
-            wr_ptr  <= 0;
-            rd_ptr  <= 0;
-            count   <= 0;
-            data_out <= 0;
-        end
-        else begin
-            case ({wr_en && !full, rd_en && !empty})
-                2'b10: begin
-                    mem[wr_ptr] <= data_in;
-                    wr_ptr <= (wr_ptr == DEPTH-1) ? 0 : wr_ptr + 1'b1;
-                    count <= count + 1'b1;
+            rp <= 5'b00000;
+            wp <= 5'b00000;
+            dout <= 16'h0000;
+        end else begin
+            case ({wr_en, rd_en})
+                2'b10: begin // Write Only
+                    if (!full) begin
+                        mem[wp[3:0]] <= data_in;
+                        wp <= wp + 1;
+                    end
                 end
-
-                2'b01: begin
-                    data_out <= mem[rd_ptr];
-                    rd_ptr <= (rd_ptr == DEPTH-1) ? 0 : rd_ptr + 1'b1;
-                    count <= count - 1'b1;
+                
+                2'b01: begin // Read Only
+                    if (!empty) begin
+                        dout <= mem[rp[3:0]];
+                        rp <= rp + 1;
+                    end
                 end
-
-                2'b11: begin
-                    mem[wr_ptr] <= data_in;
-                    data_out <= mem[rd_ptr];
-
-                    wr_ptr <= (wr_ptr == DEPTH-1) ? 0 : wr_ptr + 1'b1;
-                    rd_ptr <= (rd_ptr == DEPTH-1) ? 0 : rd_ptr + 1'b1;
+                
+                2'b11: begin // Simultaneous Read & Write
+                    if (full) begin
+                        // Full state: can't write, but can read
+                        dout <= mem[rp[3:0]];
+                        rp <= rp + 1;
+                    end else if (empty) begin
+                        // Empty state: can't read, but can write
+                        mem[wp[3:0]] <= data_in;
+                        wp <= wp + 1;
+                    end else begin
+                        // Normal state: do both concurrently
+                        mem[wp[3:0]] <= data_in;
+                        dout <= mem[rp[3:0]];
+                        wp <= wp + 1;
+                        rp <= rp + 1;
+                    end
                 end
-
-                default: begin
-                    // No valid read or write operation.
+                
+                2'b00: begin // Idle
+                    wp <= wp;
+                    rp <= rp;
                 end
             endcase
         end
